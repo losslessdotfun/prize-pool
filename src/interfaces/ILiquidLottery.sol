@@ -1,6 +1,7 @@
 pragma solidity ^0.8.20;
 
 interface ILiquidLottery {
+
     enum Epoch {
         Open,
         Pending,
@@ -64,4 +65,5 @@ interface ILiquidLottery {
     event Roll(uint256 indexed block, bytes32 entropy, uint8 indexed bucket, uint256 prize);
 
     event Leverage(address indexed account, address indexed delegate, uint256 collateral, uint256 principal);
+
 }

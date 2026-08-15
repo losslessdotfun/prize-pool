@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 abstract contract IVRFConsumerBaseV2 {
+
     error OnlyCoordinatorCanFulfill(address have, address want);
     address private immutable vrfCoordinator;
 
@@ -17,4 +18,5 @@ abstract contract IVRFConsumerBaseV2 {
         }
         fulfillRandomWords(requestId, randomWords);
     }
+
 }

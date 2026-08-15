@@ -10,12 +10,13 @@ import {IERC20Base} from "@interfaces/IERC20Base.sol";
 import {TaxableERC20} from "./TaxableERC20.sol";
 
 /*
-    * @author deoidh 
+    * @author deomaius
     * @title Liquid Lossless Lottery
     * @description An egalitarian prize-savings pool with a liquid ticket system 
 */
 
 contract LiquidLottery is ILiquidLottery {
+
     bool public _failsafe;
 
     uint8 public _slots;
@@ -129,35 +130,6 @@ contract LiquidLottery is ILiquidLottery {
     }
 
     /*
-        * @dev Outstanding debt helper
-        * @param account - Target address
-        * @return Collateral denominated debt
-    */
-    function debt(address account, uint8 index) public view returns (uint256) {
-        uint256 premium = interestDue(account, index);
-        uint256 principal = _credit[account].notes[index].debt;
-
-        return principal + premium;
-    }
-
-    /*
-        * @dev Active credit helper
-        * @param account - Target address
-        * @param index - Bucket index value
-        * @param index - Delegator address
-        * @return Collateral denominated credit
-    */
-    function credit(address account, uint8 index, address delegator) public view returns (uint256) {
-        uint256 base = rewards(account, index);
-
-        if (account != delegator && delegatedTo(delegator, index) == account) {
-            base += rewards(delegator, index);
-        }
-
-        return base * _limitLtv / 1e18;
-    }
-
-    /*
         * @dev Unclaimed rewards helper
         * @param account - Target address
         * @param index - Bucket index value
@@ -172,34 +144,6 @@ contract LiquidLottery is ILiquidLottery {
         uint256 rate = bucket.rewardCheckpoint - vault.checkpoint;
 
         return rate * scale(vault.deposit, _decimalT, _decimalC) / 1e18;
-    }
-
-    /*
-        * @dev Outstanding interest helper
-        * @param account - Target address
-        * @return Collateral denominated interest 
-    */
-    function interestDue(address account, uint8 index) public view returns (uint256) {
-        Note storage note = _credit[account].notes[index];
-
-        uint256 t = block.timestamp - note.timestamp;
-        uint256 premium = note.principal * _limitApy / 10000;
-
-        return note.interest + premium * t / 365 days;
-    }
-
-    /*
-        * @dev Delegated address helper
-        * @param from - Target address
-        * @param index - Bucket index value
-        * @return Delegate address 
-    */
-    function delegatedTo(address from, uint8 index) public view returns (address) {
-        Delegate storage delegation = _credit[from].delegations[index];
-
-        if (delegation.expiry < block.timestamp) return from;
-
-        return delegation.delegate;
     }
 
     /*
@@ -245,30 +189,6 @@ contract LiquidLottery is ILiquidLottery {
         } else {
             return Epoch.Closed;
         }
-    }
-
-    /*
-        * @dev Credit Repayment time helper
-        * @param account - User address
-        * @param index - Bucket index
-        * @param amount - Loan amount
-        * @return Expected repayment time in seconds
-    */
-    function timeToRepay(address from, uint8 index, uint256 amount) public view returns (uint256) {
-        Bucket storage bucket = _buckets[index];
-        Stake storage vault = _stakes[from][index];
-
-        uint256 alloc = (vault.deposit * 1e18) / bucket.totalDeposits;
-        uint256 cycle = (_reserves * _limitApy * CYCLE) / (365 days * 10000);
-        uint256 position = cycle * alloc / 1e18;
-
-        uint256 premiumPerSlot = currentPremium() / _slots;
-        uint256 avgPremium = premiumPerSlot * alloc / 1e18;
-        uint256 totalPerCycle = avgPremium + position;
-
-        if (totalPerCycle == 0) return type(uint256).max;
-
-        return (amount * CYCLE) / totalPerCycle;
     }
 
     /*
@@ -397,134 +317,6 @@ contract LiquidLottery is ILiquidLottery {
     }
 
     /*
-        * @dev Open reward credit position
-        * @param from - Credit address source
-        * @param index - Bucket index value
-        * @param index - Collateral denominated position value    
-    */
-    function leverage(address from, uint256 amount, uint8 index) public notCycle(Epoch.Closed) {
-        require(index <= _slots, "Invalid bucket index");
-
-        uint256 earned = rewards(from, index);
-
-        Credit storage quota = _credit[from];
-        Stake storage vault = _stakes[from][index];
-        Note storage note = quota.notes[index];
-
-        require(amount <= earned, "Insufficient rewards for collateral");
-        require(delegatedTo(from, index) == msg.sender, "Not valid delegate");
-        require(credit(msg.sender, index, from) >= amount, "Insufficient credit");
-
-        uint256 collateral = scale(amount, _decimalC, _decimalT) * 1e18 / _limitLtv;
-        uint256 position = scale(collateral, _decimalT, _decimalC);
-
-        _reserves += position;
-
-        uint256 tickets = position * 1e18 / collateralPerShare();
-
-        note.debt += amount;
-        note.principal += amount;
-        note.collateral += tickets;
-        note.timestamp = block.timestamp;
-        quota.liabilities += amount;
-        vault.outstanding += tickets;
-        vault.deposit += tickets;
-
-        _moveCheckpoint(vault, index, collateral, earned);
-        _pool.withdraw(address(_collateral), amount, msg.sender);
-        _ticket.mint(address(this), tickets);
-
-        emit Leverage(from, msg.sender, collateral, amount);
-    }
-
-    /*
-        * @dev Settle reward credit position
-        * @param index - Bucket index value
-        * @param amount - Collateral denominated debit value    
-    */
-    function repay(uint256 amount, uint8 index) public notCycle(Epoch.Closed) {
-        Stake storage vault = _stakes[msg.sender][index];
-        Credit storage quota = _credit[msg.sender];
-        Note storage note = quota.notes[index];
-
-        uint256 earned = rewards(msg.sender, index);
-        uint256 premium = interestDue(msg.sender, index);
-
-        require(index <= _slots, "Invalid bucket index");
-
-        uint256 expense = scale(amount + earned, _decimalC, _decimalT);
-        uint256 recoup = selfRepayment(premium, earned, amount, note, vault);
-
-        note.debt -= recoup;
-        quota.liabilities -= recoup;
-        note.timestamp = block.timestamp;
-
-        _moveCheckpoint(vault, index, expense, earned);
-        _collateral.transferFrom(msg.sender, address(this), amount);
-
-        if (note.debt == 0) {
-            vault.outstanding -= note.collateral;
-
-            delete note.collateral;
-            delete note.timestamp;
-        }
-
-        emit Repayment(msg.sender, index, recoup);
-    }
-
-    /*
-        * @dev Internal interest repayment handler
-        * @param interest - Interest accrued for period
-        * @param premium - Current reward premium
-        * @param amount - Repayment value
-        * @param note - Credit position note
-        * @param vault - Stake position vault
-        * @return Excess repayment for principal
-    */
-    function selfRepayment(uint256 interest, uint256 premium, uint256 amount, Note storage note, Stake storage vault)
-        internal
-        returns (uint256)
-    {
-        interest += note.interest;
-        uint256 recoup = amount + premium;
-
-        if (recoup > 0) {
-            if (recoup >= interest) {
-                note.interest = 0;
-                _reserves += interest;
-
-                return recoup - interest;
-            }
-
-            note.interest += interest - recoup;
-            _reserves += recoup;
-
-            return 0;
-        }
-
-        note.interest = interest;
-
-        return 0;
-    }
-
-    /*
-        * @dev Credit delegation handler
-        * @param to - Target delegate address
-        * @param index - Bucket index value
-        * @param duration - Delegation timelock period
-    */
-    function delegate(address to, uint8 index, uint256 duration) public {
-        Delegate storage delegation = _credit[msg.sender].delegations[index];
-
-        require(delegation.expiry < block.timestamp, "Active delegation");
-
-        delegation.delegate = to;
-        delegation.expiry = block.timestamp + duration;
-
-        emit Delegation(msg.sender, to, delegation.expiry);
-    }
-
-    /*
         * @dev Bucket stake operation
         * @param amount - Ticket denominated stake value
         * @param index - Bucket index value
@@ -589,18 +381,6 @@ contract LiquidLottery is ILiquidLottery {
     */
     function issueRebate(address account, uint256 amount) public onlyController {
         TaxableERC20(address(_ticket)).rebate(account, amount);
-    }
-
-    /*
-        * @dev Configure credit apy rate 
-        * @param apy - Pool annual per year (APY) rate
-    */
-    function setApy(uint256 apy) public onlyController {
-        require(apy < 10000, "Invalid apy bps format");
-
-        _limitApy = apy;
-
-        emit Configure(apy);
     }
 
     /*

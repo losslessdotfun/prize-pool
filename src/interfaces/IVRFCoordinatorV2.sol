@@ -28,4 +28,5 @@ interface IVRFCoordinatorV2 {
     function cancelSubscription(uint64 subId, address to) external;
 
     function pendingRequestExists(uint64 subId) external view returns (bool);
+
 }

@@ -8,6 +8,7 @@ import "@root/TaxableERC20.sol";
 import "@root/LiquidLottery.sol";
 
 contract LiquidLotteryTest is Test {
+
     IERC20Base _ticket;
     IERC20Base _collateral;
     IVRFCoordinatorV2 _oracle;
@@ -23,10 +24,9 @@ contract LiquidLotteryTest is Test {
     address constant AAVE_POOL_PROVIDER = 0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e;
     address constant TOKEN_USDC_ADDRESS = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     
-    // Chainlink VRF V2 Coordinator - Mainnet
     address constant VRF_COORDINATOR = 0x271682DEB8C4E0901D1a1550aD2e64D568E69909; 
     bytes32 constant KEY_HASH = 0x474e34a077df58807dbe9c96d3c009b23b3c6d0cce433e59bbf5b34f823bc56c;
-    uint64 constant SUBSCRIPTION_ID = 1; 
+    uint64 constant SUBSCRIPTION_ID = 1;
 
     function setUp() public {
         vm.deal(COORDINATOR_ADDRESS, 1 ether);
@@ -86,7 +86,7 @@ contract LiquidLotteryTest is Test {
     function syncAndFulfill(uint256 randomValue) internal {
         _lottery.sync();
         uint256 requestId = _lottery._lastReqId();
-        
+
         vm.startPrank(VRF_COORDINATOR);
         uint256[] memory randomWords = new uint256[](1);
         randomWords[0] = randomValue;
@@ -282,176 +282,4 @@ contract LiquidLotteryTest is Test {
         /* --------------------------------- */
     }
 
-    function testLeverage() public {
-        /* -------------BENEFACTOR------------ */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        _collateral.approve(address(_lottery), 1000 * 10 ** 6);
-        _lottery.mint(1000 * 10 ** 6);
-        _ticket.approve(address(_lottery), 1000 ether);
-        _lottery.stake(1000 ether, 2);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        /* -------------COUNTERPARTY------------ */
-        vm.startPrank(COUNTERPARTY_ADDRESS);
-
-        _collateral.approve(address(_lottery), 3333 * 10 ** 6);
-        _lottery.mint(3333 * 10 ** 6);
-        _ticket.approve(address(_lottery), 3333 ether);
-        _lottery.stake(3333 ether, 1);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        vm.warp(block.timestamp + 6 days + 12 hours + 1 minutes);
-
-        // Request and fulfill VRF
-        syncAndFulfill(2 + (4 * 99999)); // Bucket 2
-
-        vm.warp(block.timestamp + 12 hours);
-
-        /* -------------COUNTERPARTY------------ */
-        vm.startPrank(COUNTERPARTY_ADDRESS);
-
-        _lottery.unstake(3333 ether, 1);
-        _ticket.approve(address(_lottery), 3333 ether);
-        _lottery.stake(3333 ether, 2);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        /* -------------BENEFACTOR------------ */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        uint256 preRewards = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-        uint256 preCredit = _lottery.credit(BENEFACTOR_ADDRESS, 2, address(0x0));
-
-        _lottery.leverage(BENEFACTOR_ADDRESS, preCredit, 2);
-        _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-
-        uint256 postCredit = _lottery.credit(BENEFACTOR_ADDRESS, 2, address(0x0));
-        uint256 postRewards = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-        uint256 collateralBalance = 9000 * 10 ** 6 + preCredit;
-
-        assertEq(_collateral.balanceOf(BENEFACTOR_ADDRESS), collateralBalance);
-        assertEq(preCredit, preRewards / 2);
-        assertEq(postRewards, 0);
-        assertEq(postCredit, 0);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        vm.warp(block.timestamp + 6 days + 12 hours + 1 minutes);
-
-        // Request and fulfill VRF again
-        syncAndFulfill(2 + (4 * 55555)); // Bucket 2
-
-        vm.warp(block.timestamp + 12 hours);
-
-        /* ----------BENEFACTOR--------------- */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        uint256 preDebit = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-        uint256 preInterest = _lottery.interestDue(BENEFACTOR_ADDRESS, 2);
-        uint256 preDebt = _lottery.debt(BENEFACTOR_ADDRESS, 2);
-
-        uint256 debit = preInterest + preDebit;
-
-        _collateral.approve(address(_lottery), debit);
-        _lottery.repay(debit, 2);
-
-        uint256 postDebit = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-        uint256 postInterest = _lottery.interestDue(BENEFACTOR_ADDRESS, 2);
-        uint256 postDebt = _lottery.debt(BENEFACTOR_ADDRESS, 2);
-
-        uint256 outstandingDebt = preDebt - preInterest - (preDebit * 2);
-
-        assertEq(postInterest, 0);
-        assertEq(postDebt, outstandingDebt);
-        assertEq(postDebit, 0);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-    }
-
-    function testDelegation() public {
-        /* -------------BENEFACTOR------------ */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        _collateral.approve(address(_lottery), 1000 * 10 ** 6);
-        _lottery.mint(1000 * 10 ** 6);
-        _ticket.approve(address(_lottery), 1000 ether);
-        _lottery.stake(1000 ether, 2);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        vm.warp(block.timestamp + 6 days + 12 hours + 1 minutes);
-
-        // Request and fulfill VRF
-        syncAndFulfill(2 + (4 * 11111));
-
-        vm.warp(block.timestamp + 14 days);
-
-        // Request and fulfill VRF again
-        syncAndFulfill(2 + (4 * 22222));
-
-        vm.warp(block.timestamp + 12 hours);
-
-        /* -------------BENEFACTOR------------ */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        uint256 benefactorRewards = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-        uint256 benefactorCredit = _lottery.credit(BENEFACTOR_ADDRESS, 2, address(0x0));
-
-        _lottery.delegate(COUNTERPARTY_ADDRESS, 2, 14 days);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        /* -------------COUNTERPARTY------------ */
-        vm.startPrank(COUNTERPARTY_ADDRESS);
-
-        uint256 preBalance = _collateral.balanceOf(COUNTERPARTY_ADDRESS);
-        uint256 preCredit = _lottery.credit(COUNTERPARTY_ADDRESS, 2, BENEFACTOR_ADDRESS);
-
-        _lottery.leverage(BENEFACTOR_ADDRESS, preCredit / 2, 2);
-
-        uint256 postBalance = _collateral.balanceOf(COUNTERPARTY_ADDRESS);
-        uint256 postCredit = _lottery.credit(COUNTERPARTY_ADDRESS, 2, BENEFACTOR_ADDRESS);
-        uint256 postRewards = _lottery.rewards(BENEFACTOR_ADDRESS, 2);
-
-        uint256 diff = postCredit - preCredit / 2;
-        uint256 basisPoints = (diff * 10000) / preCredit;
-        uint256 expectedCredit = preCredit / 2 + ((preCredit * basisPoints) / 10000);
-
-        assertEq(postBalance, 10000 * 10 ** 6 + preCredit / 2);
-        // Precision loss makes post > actual
-        assertGt(postCredit, expectedCredit);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        /* -------------BENEFACTOR------------ */
-        vm.startPrank(BENEFACTOR_ADDRESS);
-
-        vm.expectRevert();
-        _lottery.leverage(BENEFACTOR_ADDRESS, 1, 2);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-
-        vm.warp(block.timestamp + 14 days + 1 minutes);
-
-        /* -------------COUNTERPARTY------------ */
-        vm.startPrank(COUNTERPARTY_ADDRESS);
-
-        vm.expectRevert();
-        _lottery.leverage(BENEFACTOR_ADDRESS, 1, 2);
-
-        vm.stopPrank();
-        /* --------------------------------- */
-    }
 }
